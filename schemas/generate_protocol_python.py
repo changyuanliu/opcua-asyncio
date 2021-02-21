@@ -80,9 +80,15 @@ class CodeGenerator:
         self.write('')
         self.write('from datetime import datetime')
         self.write('from enum import IntEnum')
+        self.write('from typing import Union, List')
+        self.write('from dataclasses import dataclass, field')
         self.write('')
         # self.write('from asyncua.ua.uaerrors import UaError')
-        self.write('from asyncua.ua.uatypes import *')
+        self.write('from asyncua.ua.uatypes import FROZEN')
+        self.write('from asyncua.ua.uatypes import SByte, Byte, Bytes, ByteString, Int16, Int32, Int64, UInt16, UInt32, UInt64, Boolean, Float, Double, Null, String, CharArray, DateTime, Guid')
+        self.write('from asyncua.ua.uatypes import ValueRank, AccessLEvel, WriteMask, Eventnotifier  ')
+        self.write('from asyncua.ua.uatypes import LocalizedText, Variant, VariantType, QualifiedName, StatusCode')
+        self.write('from asyncua.ua.uatypes import NodeId, NodeIdType, NumericalNodeId, StringNodeId, ExpandedNodeId')
         self.write('from asyncua.ua.object_ids import ObjectIds')
 
     def generate_enum_code(self, enum):
@@ -106,7 +112,8 @@ class CodeGenerator:
         self.write('')
         self.write('')
         self.iidx = 0
-        self.write(f'class {obj.name}(FrozenClass):')
+        self.write('@dataclass(frozen=FROZEN)')
+        self.write(f'class {obj.name}:')
         self.iidx += 1
         self.write('"""')
         if obj.doc:
@@ -122,10 +129,36 @@ class CodeGenerator:
         if "Parameter" not in obj.name and "Result" not in obj.name:
             self.write(f'data_type = NodeId(ObjectIds.{obj.name})')
             self.write('')
+
+       # hack extension object stuff
+        extobj_hack = False
+        if "BodyLength" in [f.name for f in obj.fields]:
+            extobj_hack = True
+
+        for field in obj.fields:
+            if field.length:
+                typestring = f"List[{field.uatype}]"
+            else:
+                typestring = field.uatype
+            if field.name == "Encoding":
+                val = 0 if not extobj_hack else 1
+                self.write(f"{field.name}: Byte = field(default={val}, repr=False, init=False)")
+            elif field.uatype == obj.name:  # help!!! selv referencing class
+                pass
+                #FIXME:  handle
+            elif field.name == obj.name:  # help!!! selv referencing class
+                self.write(f"{field.name}: {typestring}_ = None")
+            elif obj.name not in ("ExtensionObject",) and \
+                    field.name == "TypeId":  # and ( obj.name.endswith("Request") or obj.name.endswith("Response")):
+                self.write(f"TypeId: nodeId = FourByteNodeId(ObjectIds.{obj.name}_Encoding_DefaultBinary)")
+            else:
+                self.write(f"{field.name}: {typestring} = {'[]' if field.length else self.get_default_value(field)}")
+
         switch_written = False
         for field in obj.fields:
             if field.switchfield is not None:
                 if not switch_written:
+                    self.write("")
                     self.write('ua_switches = {')
                     switch_written = True
 
@@ -133,51 +166,7 @@ class CodeGenerator:
                 self.write(f"    '{field.name}': ('{bit.container}', {bit.idx}),")
             # if field.switchvalue is not None: Not sure we need to handle that one
         if switch_written:
-            self.write("           }")
-        self.write("ua_types = [")
-        for field in obj.fields:
-            prefix = "ListOf" if field.length else ""
-            uatype = prefix + field.uatype
-            if uatype == "ListOfChar":
-                uatype = "String"
-            self.write(f"    ('{field.name}', '{uatype}'),")
-        self.write("           ]")
-        self.write("")
-
-        self.write("def __init__(self):")
-        self.iidx += 1
-
-        # hack extension object stuff
-        extobj_hack = False
-        if "BodyLength" in [f.name for f in obj.fields]:
-            extobj_hack = True
-
-        for field in obj.fields:
-            if extobj_hack and field.name == "Encoding":
-                self.write("self.Encoding = 1")
-            elif field.uatype == obj.name:  # help!!! selv referencing class
-                self.write("self.{} = None".format(field.name))
-            elif obj.name not in ("ExtensionObject",) and \
-                    field.name == "TypeId":  # and ( obj.name.endswith("Request") or obj.name.endswith("Response")):
-                self.write(f"self.TypeId = FourByteNodeId(ObjectIds.{obj.name}_Encoding_DefaultBinary)")
-            else:
-                self.write(f"self.{field.name} = {'[]' if field.length else self.get_default_value(field)}")
-        self.write("self._freeze = True")
-        self.iidx = 1
-
-        # __str__
-        self.write("")
-        self.write("def __str__(self):")
-        self.iidx += 1
-        tmp = [f"{f.name}:{{self.{f.name}}}" for f in obj.fields]
-        tmp = ", ".join(tmp)
-        if tmp:
-            self.write(f"return f'{obj.name}({tmp})'")
-        else:
-            self.write(f"return '{obj.name}()'")
-        self.iidx -= 1
-        self.write("")
-        self.write("__repr__ = __str__")
+            self.write("}")
 
         self.iidx = 0
 
@@ -231,7 +220,7 @@ class CodeGenerator:
         elif field.uatype in 'ExtensionObject':
             return 'ExtensionObject()'
         else:
-            return f'{field.uatype}()'
+            return f'field(default_factory={field.uatype})'
 
 
 if __name__ == '__main__':
